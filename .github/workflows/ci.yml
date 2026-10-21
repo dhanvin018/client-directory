@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Database settings come from config.json (database.url); the Postgres
+# containers below use the same credentials so no override is needed.
+# psql and jq ship with the ubuntu runner image.
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: secretpassword
+          POSTGRES_DB: dirtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dirtest"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Apply schema
+        run: sh scripts/migrate.sh
+
+      - name: Re-apply schema (must be idempotent)
+        run: sh scripts/migrate.sh
+
+      - name: Vet
+        run: go vet ./...
+
+      # The integration tests truncate every table, so they only run when
+      # TEST_DATABASE_URL is set explicitly; point it at the CI database.
+      - name: Test
+        run: |
+          export TEST_DATABASE_URL="$(jq -r .database.url config.json)"
+          go test ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t client-directory:ci .
+
+      # Boots the real image against a fresh Postgres to prove the entrypoint
+      # applies the schema before the server starts. Host networking lets the
+      # app reach localhost:5432 exactly as written in the baked-in config.json.
+      - name: Smoke test container startup
+        run: |
+          docker run -d --name pg -p 5432:5432 \
+            -e POSTGRES_PASSWORD=secretpassword -e POSTGRES_DB=dirtest postgres:16-alpine
+          # The server refuses to start without an OAuth provider; placeholder
+          # credentials are enough to boot (they also exercise env > config.json).
+          docker run -d --name app --network host \
+            -e GOOGLE_CLIENT_ID=ci-placeholder -e GOOGLE_CLIENT_SECRET=ci-placeholder \
+            client-directory:ci
+          for i in $(seq 1 60); do
+            if docker logs app 2>&1 | grep -q '"Starting server"'; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' app)" != "true" ]; then break; fi
+            sleep 1
+          done
+          docker logs app
+          docker logs app 2>&1 | grep -q 'migrate: using config /app/config.json'
+          docker logs app 2>&1 | grep -q 'migrate: schema up to date'
+          docker logs app 2>&1 | grep -q '"Starting server"'
+          docker exec pg psql -U postgres -d dirtest -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_name IN
+             ('peers','rooms','document_refs','members','member_doc_roles','room_events',
+              'room_invites','room_bans','schema_migrations')" | grep -qx 9
+          # Every migration file was recorded exactly once.
+          test "$(docker exec pg psql -U postgres -d dirtest -tAc 'SELECT count(*) FROM schema_migrations')" \
+            = "$(ls db/migrations/[0-9][0-9][0-9][0-9]_*.sql | wc -l | tr -d ' ')"
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f app pg || true

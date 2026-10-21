@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: client-dir-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: dirtest
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dirtest"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Applies db/*.sql on every start (scripts/docker-entrypoint.sh), then runs the server.
+  # Settings come from config.json, mounted so edits apply on restart without a rebuild.
+  app:
+    build: .
+    container_name: client-dir-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config.json:/app/config.json:ro
+    environment:
+      # Same database as config.json, but reached by service name inside the compose network.
+      DATABASE_URL: postgres://postgres:secretpassword@postgres:5432/dirtest?sslmode=disable
+      # Optional secret overrides from the shell or a .env file; empty means "use config.json".
+      JWT_SECRET: ${JWT_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:

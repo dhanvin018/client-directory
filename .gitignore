@@ -1,0 +1,60 @@
+# ---- Go build output ----
+# `go build ./internal/main` names the binary after the package directory.
+/main
+/main.exe
+/client-directory
+/client-directory.exe
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# ---- Go tooling ----
+*.out
+coverage.*
+*.coverprofile
+*.prof
+*.pprof
+__debug_bin*
+go.work
+go.work.sum
+/vendor/
+
+# ---- Configuration and secrets ----
+# config.json is committed on purpose: the Docker image and CI read it.
+# Local overrides and env files stay out of git.
+.env
+.env.*
+!.env.example
+config.local.json
+config.json
+config.*.local.json
+*.pem
+*.key
+
+# ---- Local data and logs ----
+*.log
+/tmp/
+*.sql.gz
+*.dump
+
+# ---- Editors ----
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
