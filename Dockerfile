@@ -9,7 +9,9 @@ FROM alpine:3.22
 RUN apk add --no-cache postgresql-client jq \
 	&& adduser -D -H app
 WORKDIR /app
-COPY config.json ./config.json
+# The template, never the real config.json (git-ignored, holds secrets). Mount
+# the real file over it, or pass secrets as env vars (JWT_SECRET, GOOGLE_*).
+COPY config.example.json ./config.json
 COPY db ./db
 COPY scripts ./scripts
 COPY --from=build /out/client-directory /usr/local/bin/client-directory

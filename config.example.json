@@ -1,0 +1,33 @@
+{
+  "server": {
+    "port": "8080",
+    "allowedOrigins": ["http://localhost:3000"]
+  },
+  "database": {
+    "url": "postgres://postgres:secretpassword@localhost:5432/dirtest?sslmode=disable",
+    "maxOpenConns": 25,
+    "maxIdleConns": 5,
+    "connMaxLifetime": "5m"
+  },
+  "migrations": {
+    "schemaDir": "db/migrations",
+    "waitSeconds": 60,
+    "skip": false
+  },
+  "auth": {
+    "jwtSecret": "",
+    "jwtDuration": "24h",
+    "cookieSecure": false,
+    "postLoginRedirect": "http://localhost:3000/"
+  },
+  "invites": {
+    "linkBaseUrl": "http://localhost:3000/invite/"
+  },
+  "oauth": {
+    "google": {
+      "clientId": "",
+      "clientSecret": "",
+      "redirectUrl": "http://localhost:8080/auth/google/callback"
+    }
+  }
+}

@@ -35,6 +35,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # config.json is git-ignored; the template's database URL matches the
+      # Postgres service above.
+      - name: Use the example config
+        run: cp config.example.json config.json
+
       - name: Apply schema
         run: sh scripts/migrate.sh
 
@@ -67,9 +72,11 @@ jobs:
         run: |
           docker run -d --name pg -p 5432:5432 \
             -e POSTGRES_PASSWORD=secretpassword -e POSTGRES_DB=dirtest postgres:16-alpine
-          # The server refuses to start without an OAuth provider; placeholder
-          # credentials are enough to boot (they also exercise env > config.json).
+          # The image carries config.example.json, whose secrets are blank. The
+          # server refuses to start without a JWT secret or an OAuth provider,
+          # so pass placeholders (this also exercises env > config file).
           docker run -d --name app --network host \
+            -e JWT_SECRET=ci-only-jwt-secret \
             -e GOOGLE_CLIENT_ID=ci-placeholder -e GOOGLE_CLIENT_SECRET=ci-placeholder \
             client-directory:ci
           for i in $(seq 1 60); do

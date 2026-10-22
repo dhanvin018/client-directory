@@ -25,8 +25,9 @@ go.work.sum
 /vendor/
 
 # ---- Configuration and secrets ----
-# config.json is committed on purpose: the Docker image and CI read it.
-# Local overrides and env files stay out of git.
+# config.json holds real secrets and stays local. config.example.json is the
+# committed template (copied into the Docker image and used by CI):
+#   cp config.example.json config.json   # then fill in the secrets
 .env
 .env.*
 !.env.example

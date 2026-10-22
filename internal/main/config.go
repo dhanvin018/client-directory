@@ -120,6 +120,11 @@ func loadConfig() (Config, error) {
 	if cfg.JWTDuration, err = time.ParseDuration(fc.Auth.JWTDuration); err != nil {
 		return Config{}, fmt.Errorf("auth.jwtDuration: %w", err)
 	}
+	// An empty key would sign sessions that anyone can forge. config.example.json
+	// ships it blank on purpose, so a missing secret fails here instead.
+	if cfg.JWTSecret == "" {
+		return Config{}, errors.New("auth.jwtSecret is empty: set it in the config file or JWT_SECRET")
+	}
 	return cfg, nil
 }
 

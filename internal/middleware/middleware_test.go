@@ -90,16 +90,22 @@ func TestRecoverMiddleware(t *testing.T) {
 	}
 }
 
+// mockVerifier follows the TokenVerifier contract: an unknown token is
+// ErrInvalidToken; storeDown simulates the session store failing.
 type mockVerifier struct {
 	validToken string
 	peerID     uuid.UUID
+	storeDown  bool
 }
 
 func (m *mockVerifier) Verify(ctx context.Context, token string) (uuid.UUID, error) {
+	if m.storeDown {
+		return uuid.Nil, errors.New("session store unavailable")
+	}
 	if token == m.validToken {
 		return m.peerID, nil
 	}
-	return uuid.Nil, errors.New("invalid token")
+	return uuid.Nil, ErrInvalidToken
 }
 
 func TestAuthenticateMiddleware(t *testing.T) {
@@ -142,5 +148,24 @@ func TestAuthenticateMiddleware(t *testing.T) {
 	}
 	if extractedPeerID != expectedPeerID {
 		t.Errorf("expected extracted peer ID %v, got %v", expectedPeerID, extractedPeerID)
+	}
+
+	// 3. No credentials at all
+	recMissing := httptest.NewRecorder()
+	handler.ServeHTTP(recMissing, httptest.NewRequest(http.MethodGet, "/peers/me", nil))
+	if recMissing.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 Unauthorized for missing credentials, got %d", recMissing.Code)
+	}
+
+	// 4. Session store failure: an outage must not look like a forced logout
+	verifier.storeDown = true
+	reqDown := httptest.NewRequest(http.MethodGet, "/peers/me", nil)
+	reqDown.Header.Set("Authorization", "Bearer valid-bearer-token")
+	recDown := httptest.NewRecorder()
+
+	handler.ServeHTTP(recDown, reqDown)
+
+	if recDown.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503 Service Unavailable when the store fails, got %d", recDown.Code)
 	}
 }

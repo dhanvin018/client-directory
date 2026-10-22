@@ -2,18 +2,22 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
+	"github.com/dhanvin018/client-directory/internal/middleware"
 )
 
+// Both errors wrap middleware.ErrInvalidToken, which is the TokenVerifier
+// contract: Authenticate answers them with 401. Any other error from Verify
+// would be treated as an outage (503).
 var (
-	ErrInvalidToken = errors.New("invalid or expired token")
-	ErrTokenRevoked = errors.New("token has been revoked")
+	ErrInvalidToken = fmt.Errorf("%w: invalid or expired token", middleware.ErrInvalidToken)
+	ErrTokenRevoked = fmt.Errorf("%w: token has been revoked", middleware.ErrInvalidToken)
 )
 
 // Claims defines the custom JWT claims containing the peer ID.

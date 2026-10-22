@@ -140,10 +140,31 @@ func TestRepoConfigIsValid(t *testing.T) {
 	isolateEnv(t)
 	path := filepath.Join("..", "..", "config.json")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("no %s: %v", path, err)
+		t.Skipf("no %s (it is git-ignored): %v", path, err)
 	}
 	t.Setenv("CONFIG_FILE", path)
 	if _, err := loadConfig(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The committed template must load once its secrets are supplied, and must
+// not load without them.
+func TestExampleConfig(t *testing.T) {
+	isolateEnv(t)
+	t.Setenv("CONFIG_FILE", filepath.Join("..", "..", "config.example.json"))
+
+	_, err := loadConfig()
+	if err == nil || !strings.Contains(err.Error(), "jwtSecret") {
+		t.Fatalf("err = %v, want the missing jwtSecret to be rejected", err)
+	}
+
+	t.Setenv("JWT_SECRET", "secret-from-the-environment")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.JWTSecret != "secret-from-the-environment" || cfg.GoogleClientID != "" || cfg.GoogleSecret != "" {
+		t.Errorf("example config must carry no secrets of its own: %+v", cfg)
 	}
 }
