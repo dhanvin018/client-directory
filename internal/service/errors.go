@@ -10,6 +10,7 @@
 //	ErrConflict   -> 409
 //	ErrValidation -> 400 (or 422)
 //	ErrRateLimited -> 429
+//	ErrUnauthenticated -> 401
 //
 // Use errors.Is to test for them; the concrete errors carry a message.
 package service
@@ -20,11 +21,12 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("not found")
-	ErrForbidden   = errors.New("forbidden")
-	ErrConflict    = errors.New("conflict")
-	ErrValidation  = errors.New("invalid input")
-	ErrRateLimited = errors.New("too many requests")
+	ErrNotFound        = errors.New("not found")
+	ErrForbidden       = errors.New("forbidden")
+	ErrConflict        = errors.New("conflict")
+	ErrValidation      = errors.New("invalid input")
+	ErrRateLimited     = errors.New("too many requests")
+	ErrUnauthenticated = errors.New("unauthenticated")
 )
 
 func invalid(format string, args ...any) error {

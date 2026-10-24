@@ -56,10 +56,11 @@ func main() {
 
 	// 2. Initialize Repositories and Services
 	store := repository.NewStore(db)
-	services := service.New(store)
+	services := service.New(store, service.WithSessionTTL(cfg.SessionDuration))
 
-	// 3. Initialize Auth Session Manager
-	sessionMgr := auth.NewJWTSessionManager(cfg.JWTSecret, cfg.JWTDuration)
+	// 3. Access tokens: short-lived JWTs, checked without the database.
+	// Sessions (refresh tokens, logout) live in Postgres via services.Sessions.
+	accessTokens := auth.NewAccessTokens(cfg.JWTSecret, cfg.JWTDuration)
 
 	// 4. Initialize OAuth Providers
 	providers := make(map[string]handler.OAuthProvider)
@@ -74,8 +75,10 @@ func main() {
 	handlers := router.Handlers{
 		Auth: handler.NewAuthHandler(handler.AuthConfig{
 			Providers:         providers,
-			Sessions:          sessionMgr,
+			Tokens:            accessTokens,
+			Sessions:          services.Sessions,
 			Peers:             services.Peers,
+			Desktop:           services.Desktop,
 			CookieName:        "session",
 			CookieSecure:      cfg.CookieSecure,
 			PostLoginRedirect: cfg.PostLoginRedirect,
@@ -85,14 +88,14 @@ func main() {
 		Documents: handler.NewDocumentHandler(services.Documents, logger),
 		Members:   handler.NewMemberHandler(services.Members, logger),
 		Events:    handler.NewEventHandler(services.Events, logger),
-		Invites:   handler.NewInviteHandler(services.Invites, cfg.InviteLinkBase, logger),
+		Invites:   handler.NewInviteHandler(services.Invites, cfg.InviteLinkBase, cfg.InviteAppLinkBase, logger),
 	}
 
 	// 6. Build Router and Middleware Chain
 	rootHandler := router.New(router.Config{
 		Handlers: handlers,
 		Authenticate: middleware.Authenticate(middleware.AuthConfig{
-			Verifier:   sessionMgr,
+			Verifier:   accessTokens,
 			CookieName: "session",
 		}),
 		Global: []router.Middleware{

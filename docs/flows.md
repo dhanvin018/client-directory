@@ -16,14 +16,45 @@ sequenceDiagram
     D->>G: exchange code, fetch userinfo
     G-->>D: sub, name, email
     D->>D: FindOrCreateByAuth: existing peer, or new peer + generated handle
-    D->>D: issue JWT (24h)
-    D-->>U: 302 postLoginRedirect, Set-Cookie session
+    D->>D: insert sessions row; sign access JWT (15 min)
+    D-->>U: 302 postLoginRedirect, Set-Cookie session (access), refresh (Path=/auth)
 ```
 
 The handle is generated from the display name (`Ada Lovelace` →
 `ada.lovelace`); if taken, a 4-digit suffix is tried (`ada.lovelace_4821`), up
 to 8 attempts. A name with no usable characters becomes `user_NNNN`. If two
 first sign-ins race, the loser reuses the winner's peer.
+
+Desktop apps sign in through the system browser instead, ending with a
+one-time code delivered to the app and exchanged for access and refresh
+tokens; see [desktop-clients.md](desktop-clients.md#desktop-sign-in).
+
+## Refresh and logout
+
+```mermaid
+sequenceDiagram
+    actor C as Client (browser or app)
+    participant D as Directory
+    participant P as Postgres
+    C->>D: GET /api/v1/... (access token)
+    D->>D: check signature + expiry only
+    D-->>C: 200 ... later 401 (access token expired)
+    C->>D: POST /auth/refresh (refresh token: body or cookie)
+    D->>P: UPDATE sessions SET refresh_hash = new, previous = old,<br/>expires_at = now + 30d WHERE refresh_hash = old AND live
+    alt one row updated
+        D-->>C: 200 new access token + new refresh token
+    else none (unknown, expired or spent)
+        D->>P: DELETE session whose current or previous hash = old
+        D-->>C: 401, sign in again
+    end
+    C->>D: POST /auth/logout (refresh token, or access token even if expired)
+    D->>P: DELETE FROM sessions WHERE ...
+    D-->>C: 204, cookies cleared
+```
+
+Deleting the row is the logout record: it survives restarts and every
+instance sees it. An access token issued before the logout keeps working
+until it expires (at most 15 minutes).
 
 ## Joining a private room by invite
 

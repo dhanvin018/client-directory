@@ -1,8 +1,9 @@
 # API reference
 
 - Base path for authenticated routes: `/api/v1`.
-- Authentication: `Authorization: Bearer <token>` or the `session` cookie set
-  by sign-in.
+- Authentication: `Authorization: Bearer <access token>` or the `session`
+  cookie set by sign-in. Access tokens last `auth.jwtDuration` (15 min); get a
+  new one with `POST /auth/refresh`.
 - Request bodies are a single JSON object, at most 1 MiB; unknown fields are
   rejected with 400.
 - Errors are `{"error": "message"}`; see
@@ -17,13 +18,84 @@
 |---|---|---|---|
 | `GET /healthz` | none | Liveness | 200 `ok` |
 | `GET /auth/{provider}/login` | none | Sets the one-time `oauth_state` cookie and redirects to the provider (`google`) | 302 |
-| `GET /auth/{provider}/callback` | none | Checks state, exchanges the code, signs up or signs in, sets the `session` cookie, redirects to `auth.postLoginRedirect` | 302 |
-| `POST /auth/logout` | token | Revokes the session and clears the cookie | 204 |
+| `GET /auth/{provider}/callback` | none | Checks state, exchanges the code, signs up or signs in, starts a session. Browser: sets the `session` and `refresh` cookies and redirects to `auth.postLoginRedirect`. Desktop: redirects to the app's loopback URI with a one-time code | 302 |
+| `POST /auth/token` | none | Desktop only: one-time code + PKCE verifier → access and refresh tokens | 200 |
+| `POST /auth/refresh` | refresh token | Spends the refresh token, returns a new access token and a new refresh token | 200 |
+| `POST /auth/logout` | refresh or access token | Ends this session (deletes it from the database) and clears the cookies | 204 |
+| `POST /auth/logout-all` | token | Ends every session of the caller, on every device | 204 |
 
-Callback failures: bad or missing state 400; missing code 400; user declined
-→ redirect to `postLoginRedirect?auth_error=access_denied`; provider exchange
-failed 502. Logout returns 503 (and keeps the cookie) if the session could not
-be revoked.
+Browser callback failures: bad or missing state 400; missing code 400; user
+declined → redirect to `postLoginRedirect?auth_error=access_denied`; provider
+exchange failed 502.
+
+### Sessions, refresh and logout
+
+A sign-in starts a **session**, stored in Postgres (`sessions` table), and
+returns two tokens:
+
+| Token | Lifetime | Checked | Sent as |
+|---|---|---|---|
+| Access token (JWT naming the peer and session) | `auth.jwtDuration`, 15 min | Signature and expiry only, no database lookup | Bearer header, or the `session` cookie (Path `/`) |
+| Refresh token (256 random bits) | `auth.sessionDuration`, 30 days, extended on every refresh | Against the database (SHA-256 stored) | JSON body, or the `refresh` cookie (Path `/auth`) |
+
+`POST /auth/refresh`:
+
+- **Desktop:** body `{"refreshToken": "…"}`. The response has the same shape
+  as `/auth/token` without `peer`.
+- **Browser:** no body; the `refresh` cookie is used. The response sets both
+  cookies again and its JSON carries only `expiresAt` and `refreshExpiresAt`,
+  so the tokens never reach page scripts.
+
+Every refresh **rotates** the refresh token: the old one is spent. Presenting
+a spent token again ends the whole session, because it means someone else
+also has it. An unknown, expired, spent or missing refresh token is 401 (a
+browser's cookies are cleared): sign in again. Responses are
+`Cache-Control: no-store`.
+
+`POST /auth/logout` finds the session by, in order: `{"refreshToken": "…"}`
+in the body, the `refresh` cookie, or the access token (header or cookie; an
+expired one still works). It needs no valid access token, so a client whose
+token just expired can still log out. Logging out twice, or with an unknown
+token, is 204. If the database cannot be reached it is 503 and the cookies
+are kept, so the client never believes it logged out when it did not.
+
+After logout, access tokens already issued for the session keep working until
+they expire (at most `auth.jwtDuration`); the session can no longer be
+refreshed. See decision P13 in [decisions.md](decisions.md).
+
+### Desktop sign-in
+
+See [desktop-clients.md](desktop-clients.md) for the full flow.
+
+`GET /auth/{provider}/login` query parameters (all required for desktop; omit
+all of them for a browser sign-in):
+
+| Parameter | Rule |
+|---|---|
+| `redirect_uri` | `http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`, no query or fragment |
+| `code_challenge` | `base64url(SHA-256(code_verifier))`, 43 characters |
+| `code_challenge_method` | `S256` |
+| `state` | The app's own value, 1–512 characters, echoed back to `redirect_uri` |
+
+An invalid parameter is 400 and the user is not sent to the provider. After
+the provider, the browser goes to `redirect_uri?code=…&state=…`, or
+`redirect_uri?error=access_denied|invalid_request|server_error&state=…`.
+
+`POST /auth/token`:
+
+```json
+{"code": "…", "codeVerifier": "…", "redirectUri": "http://127.0.0.1:53682/callback"}
+```
+
+```json
+{"accessToken": "…", "tokenType": "Bearer", "expiresAt": "2026-10-23T12:15:00Z",
+ "refreshToken": "…", "refreshExpiresAt": "2026-11-22T12:00:00Z",
+ "peer": {"peerId": "…", "handle": "ada.lovelace", "userName": "Ada Lovelace"}}
+```
+
+Codes last 60 seconds and are single use. A wrong, reused or expired code, a
+verifier that does not match, or a different `redirectUri` all give the same
+400. The response is `Cache-Control: no-store`.
 
 ## Peers
 
@@ -86,7 +158,9 @@ Switching PRIVATE → PUBLIC revokes all pending invites.
 | `POST /invites/{code}/accept` | invitee | | 200 `{"room": Room, "member": Member}` |
 | `POST /invites/{code}/decline` | invitee | | 204 |
 
-Invite responses include `url` (`invites.linkBaseUrl` + code).
+Invite responses include `url` (`invites.linkBaseUrl` + code: the web link)
+and `appUrl` (`invites.appLinkBaseUrl` + code: the desktop deep link, omitted
+when that setting is empty).
 
 Failures:
 

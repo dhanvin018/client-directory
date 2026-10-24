@@ -19,6 +19,8 @@ type Services struct {
 	Members   *MemberService
 	Events    *EventService
 	Invites   *InviteService
+	Desktop   *DesktopLoginService
+	Sessions  *SessionService
 }
 
 // Option customizes New.
@@ -30,12 +32,19 @@ func WithClock(now func() time.Time) Option {
 	return func(b *base) { b.now = now }
 }
 
+// WithSessionTTL sets how long a session lasts without being refreshed
+// (default 30 days).
+func WithSessionTTL(d time.Duration) Option {
+	return func(b *base) { b.sessionTTL = d }
+}
+
 func New(store Store, opts ...Option) *Services {
 	b := base{
-		store:   store,
-		now:     func() time.Time { return time.Now().UTC() },
-		newID:   uuid.New,
-		newCode: randomCode,
+		store:      store,
+		now:        func() time.Time { return time.Now().UTC() },
+		newID:      uuid.New,
+		newCode:    randomCode,
+		sessionTTL: defaultSessionTTL,
 	}
 	for _, opt := range opts {
 		opt(&b)
@@ -47,16 +56,19 @@ func New(store Store, opts ...Option) *Services {
 		Members:   &MemberService{b},
 		Events:    &EventService{b},
 		Invites:   &InviteService{b},
+		Desktop:   &DesktopLoginService{b},
+		Sessions:  &SessionService{b},
 	}
 }
 
 // base holds what every service needs. now, newID and newCode are fields so
 // tests can make time and IDs deterministic (see WithClock).
 type base struct {
-	store   Store
-	now     func() time.Time
-	newID   func() uuid.UUID
-	newCode func() string // invite codes
+	store      Store
+	now        func() time.Time
+	newID      func() uuid.UUID
+	newCode    func() string // invite codes
+	sessionTTL time.Duration
 }
 
 // randomCode returns 128 random bits as 22 URL-safe characters.

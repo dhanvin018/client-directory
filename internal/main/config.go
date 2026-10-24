@@ -18,7 +18,8 @@ type Config struct {
 	MaxIdleConns      int
 	ConnMaxLifetime   time.Duration
 	JWTSecret         string
-	JWTDuration       time.Duration
+	JWTDuration       time.Duration // access token lifetime
+	SessionDuration   time.Duration // refresh token lifetime, extended on every refresh
 	CookieSecure      bool
 	GoogleClientID    string
 	GoogleSecret      string
@@ -26,6 +27,7 @@ type Config struct {
 	PostLoginRedirect string
 	AllowedOrigins    []string
 	InviteLinkBase    string
+	InviteAppLinkBase string
 }
 
 // fileConfig mirrors config.json. The "migrations" section is read by
@@ -45,11 +47,13 @@ type fileConfig struct {
 	Auth       struct {
 		JWTSecret         string `json:"jwtSecret"`
 		JWTDuration       string `json:"jwtDuration"`
+		SessionDuration   string `json:"sessionDuration"`
 		CookieSecure      bool   `json:"cookieSecure"`
 		PostLoginRedirect string `json:"postLoginRedirect"`
 	} `json:"auth"`
 	Invites struct {
-		LinkBaseURL string `json:"linkBaseUrl"`
+		LinkBaseURL    string `json:"linkBaseUrl"`
+		AppLinkBaseURL string `json:"appLinkBaseUrl"`
 	} `json:"invites"`
 	OAuth struct {
 		Google struct {
@@ -69,10 +73,12 @@ func defaultFileConfig() fileConfig {
 	fc.Database.MaxIdleConns = 5
 	fc.Database.ConnMaxLifetime = "5m"
 	fc.Auth.JWTSecret = "default-dev-secret-change-in-production"
-	fc.Auth.JWTDuration = "24h"
+	fc.Auth.JWTDuration = "15m"
+	fc.Auth.SessionDuration = "720h"
 	fc.Auth.PostLoginRedirect = "http://localhost:3000/"
 	fc.OAuth.Google.RedirectURL = "http://localhost:8080/auth/google/callback"
 	fc.Invites.LinkBaseURL = "http://localhost:3000/invite/"
+	fc.Invites.AppLinkBaseURL = "collabdoc://invite/"
 	return fc
 }
 
@@ -110,6 +116,7 @@ func loadConfig() (Config, error) {
 		PostLoginRedirect: getEnv("POST_LOGIN_REDIRECT", fc.Auth.PostLoginRedirect),
 		AllowedOrigins:    fc.Server.AllowedOrigins,
 		InviteLinkBase:    getEnv("INVITE_LINK_BASE_URL", fc.Invites.LinkBaseURL),
+		InviteAppLinkBase: getEnv("INVITE_APP_LINK_BASE_URL", fc.Invites.AppLinkBaseURL),
 	}
 	if v := getEnv("ALLOWED_ORIGINS", ""); v != "" {
 		cfg.AllowedOrigins = strings.Split(v, ",")
@@ -119,6 +126,14 @@ func loadConfig() (Config, error) {
 	}
 	if cfg.JWTDuration, err = time.ParseDuration(fc.Auth.JWTDuration); err != nil {
 		return Config{}, fmt.Errorf("auth.jwtDuration: %w", err)
+	}
+	if cfg.SessionDuration, err = time.ParseDuration(fc.Auth.SessionDuration); err != nil {
+		return Config{}, fmt.Errorf("auth.sessionDuration: %w", err)
+	}
+	// A logged-out access token works until it expires, so it must be short;
+	// the session (refresh token) is what keeps the user signed in.
+	if cfg.JWTDuration <= 0 || cfg.SessionDuration <= cfg.JWTDuration {
+		return Config{}, errors.New("auth.jwtDuration must be positive and shorter than auth.sessionDuration")
 	}
 	// An empty key would sign sessions that anyone can forge. config.example.json
 	// ships it blank on purpose, so a missing secret fails here instead.

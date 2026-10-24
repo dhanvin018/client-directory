@@ -17,10 +17,12 @@ are an error, so typos fail at startup (key matching is case-insensitive).
 | `migrations.waitSeconds` | `DB_WAIT_SECONDS` | 60 | migrate.sh |
 | `migrations.skip` | `SKIP_MIGRATIONS` (`1`/`true`) | false | migrate.sh |
 | `auth.jwtSecret` | `JWT_SECRET` | dev placeholder when the key is absent | sessions (**required**: an empty value stops startup, because an empty key would make tokens forgeable) |
-| `auth.jwtDuration` | — | `24h` | sessions |
+| `auth.jwtDuration` | — | `15m` | access token lifetime. Also the longest an access token keeps working after logout, so keep it short |
+| `auth.sessionDuration` | — | `720h` (30 days) | refresh token lifetime, extended on every refresh; must be longer than `jwtDuration` |
 | `auth.cookieSecure` | — | false (set true behind HTTPS) | cookies |
 | `auth.postLoginRedirect` | `POST_LOGIN_REDIRECT` | `http://localhost:3000/` | OAuth callback |
-| `invites.linkBaseUrl` | `INVITE_LINK_BASE_URL` | `http://localhost:3000/invite/` | invite links |
+| `invites.linkBaseUrl` | `INVITE_LINK_BASE_URL` | `http://localhost:3000/invite/` | invite web links (`url`) |
+| `invites.appLinkBaseUrl` | `INVITE_APP_LINK_BASE_URL` | `collabdoc://invite/` | desktop deep links (`appUrl`); empty disables them |
 | `oauth.google.clientId` / `clientSecret` | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | empty | OAuth (**required**: the server will not start without a provider) |
 | `oauth.google.redirectUrl` | `OAUTH_REDIRECT_URL` | `http://localhost:8080/auth/google/callback` | OAuth |
 

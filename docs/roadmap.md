@@ -4,10 +4,9 @@
 
 | Issue | Impact | Fix |
 |---|---|---|
-| **Session revocation is in memory** (`revokedTokens` map) | Logouts are forgotten on restart and not shared between instances; the map grows without bound | Store revoked `jti`s (with expiry) in Postgres or Redis, or switch to opaque sessions in a table |
 | Test directory is misspelled `repostiory_test` | Cosmetic | Rename to `repository_test` |
 | The entry point lives in `internal/main` | Unconventional (`cmd/<name>` is usual) | Move to `cmd/client-directory` when convenient |
-| Some files are not `gofmt`-formatted (`auth/session*.go`, several `router/*.go`) | Cosmetic | `gofmt -w` |
+| Some files are not `gofmt`-formatted (`router/document-router.go`, `router/event-router.go`) | Cosmetic | `gofmt -w` |
 
 ## Directory: still to build
 
@@ -15,11 +14,18 @@
 - An authorization check for the collaboration server: given a peer and a
   document, return the effective document role (internal endpoint, or claims
   in a short-lived document token).
-- Desktop sign-in if the client is a desktop app: system browser, loopback
-  redirect with PKCE, token returned to the app instead of a cookie
-  (decision P6).
-- Invite deep links for the desktop app (for example `collabdoc://invite/{code}`)
-  and a small web landing page; `invites.linkBaseUrl` points there.
+- ~~Desktop sign-in~~ and ~~invite deep links~~: done (see
+  [desktop-clients.md](desktop-clients.md)). Still to do for desktop:
+  - ~~Refresh tokens~~ and ~~persistent logout~~: done (decisions P13–P18).
+  - A small **web landing page** at `invites.linkBaseUrl` that tries
+    `collabdoc://invite/{code}` and otherwise offers the download.
+  - Pick the final **URL scheme** (`collabdoc` is a placeholder) before the
+    first release; changing it later breaks shared links.
+  - A "signed-in devices" list (`GET /auth/sessions`, end one by ID); the
+    table already has what it needs, plus a device name to add.
+  - Instant logout, if ever required: a revocation list of session IDs
+    checked per request, in Redis once the collaboration server brings it in
+    (decision P15).
 - Push notifications (new invite, accepted invite) over the collaboration
   server's WebSocket instead of polling `GET /invites`.
 - Comment threads (if they live in the directory's database), anchored to CRDT

@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -44,33 +45,58 @@ func (p *fakeProvider) Exchange(ctx context.Context, code string) (handler.Ident
 	return p.identities[code], nil
 }
 
-type fakeSessions struct {
-	mu        sync.Mutex
-	issued    map[string]uuid.UUID
-	revoked   []string
-	revokeErr error
+// fakeTokens signs nothing: a token is an opaque string remembered with the
+// peer and session it was issued for. It is also the middleware's verifier.
+type fakeTokens struct {
+	mu     sync.Mutex
+	issued map[string]issuedToken
 }
 
-func (s *fakeSessions) Issue(ctx context.Context, peerID uuid.UUID) (string, time.Time, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+type issuedToken struct{ peer, session uuid.UUID }
+
+func (f *fakeTokens) Issue(ctx context.Context, peerID, sessionID uuid.UUID) (string, time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	token := "tok-" + uuid.NewString()
-	s.issued[token] = peerID
-	return token, time.Now().Add(time.Hour), nil
+	f.issued[token] = issuedToken{peerID, sessionID}
+	return token, time.Now().Add(15 * time.Minute), nil
 }
 
-func (s *fakeSessions) Revoke(ctx context.Context, token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.revoked = append(s.revoked, token)
-	return s.revokeErr
+func (f *fakeTokens) lookup(token string) (issuedToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.issued[token]
+	if !ok {
+		return issuedToken{}, middleware.ErrInvalidToken
+	}
+	return t, nil
+}
+
+func (f *fakeTokens) Verify(ctx context.Context, token string) (uuid.UUID, error) {
+	t, err := f.lookup(token)
+	return t.peer, err
+}
+
+func (f *fakeTokens) SessionID(ctx context.Context, token string) (uuid.UUID, error) {
+	t, err := f.lookup(token)
+	return t.session, err
+}
+
+func (f *fakeTokens) peer(token string) uuid.UUID {
+	t, _ := f.lookup(token)
+	return t.peer
 }
 
 // peerStore is the minimum service.Store the PeerService needs; the other
 // repositories are never touched by the auth flow.
 type peerStore struct {
-	mu    sync.Mutex
-	peers map[uuid.UUID]model.Peer
+	mu     sync.Mutex
+	peers  map[uuid.UUID]model.Peer
+	logins map[string]service.DesktopLogin
+	codes  map[string]service.DesktopAuthCode
+
+	sessions   map[uuid.UUID]service.Session
+	sessionErr error // simulates the sessions table being unreachable
 }
 
 func (s *peerStore) Peers() service.PeerRepository         { return s }
@@ -80,6 +106,10 @@ func (s *peerStore) Members() service.MemberRepository     { return nil }
 func (s *peerStore) Events() service.EventRepository       { return nil }
 func (s *peerStore) Invites() service.InviteRepository     { return nil }
 func (s *peerStore) Bans() service.BanRepository           { return nil }
+func (s *peerStore) DesktopLogins() service.DesktopLoginRepository {
+	return desktopStore{s}
+}
+func (s *peerStore) Sessions() service.SessionRepository { return sessionStore{s} }
 func (s *peerStore) WithTx(ctx context.Context, fn func(service.Repos) error) error {
 	return fn(s)
 }
@@ -120,17 +150,133 @@ func (s *peerStore) UpdateHandle(ctx context.Context, id uuid.UUID, handle strin
 	return nil, errors.New("not used")
 }
 
+// desktopStore keeps desktop sign-ins in the same fake.
+type desktopStore struct{ s *peerStore }
+
+func (d desktopStore) SaveLogin(ctx context.Context, l service.DesktopLogin) error {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	d.s.logins[l.State] = l
+	return nil
+}
+
+func (d desktopStore) TakeLogin(ctx context.Context, state string, now time.Time) (*service.DesktopLogin, error) {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	l, ok := d.s.logins[state]
+	if !ok || !l.ExpiresAt.After(now) {
+		return nil, service.ErrNotFound
+	}
+	delete(d.s.logins, state)
+	return &l, nil
+}
+
+func (d desktopStore) SaveCode(ctx context.Context, c service.DesktopAuthCode) error {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	d.s.codes[string(c.CodeHash)] = c
+	return nil
+}
+
+func (d desktopStore) TakeCode(ctx context.Context, hash []byte, now time.Time) (*service.DesktopAuthCode, error) {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	c, ok := d.s.codes[string(hash)]
+	if !ok || !c.ExpiresAt.After(now) {
+		return nil, service.ErrNotFound
+	}
+	delete(d.s.codes, string(hash))
+	return &c, nil
+}
+
+func (d desktopStore) DeleteExpired(ctx context.Context, now time.Time) error { return nil }
+
+// sessionStore keeps sessions in the same fake. It does not track previous
+// hashes; reuse detection is covered by the service tests.
+type sessionStore struct{ s *peerStore }
+
+func (d sessionStore) Create(ctx context.Context, sess service.Session) error {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	if d.s.sessionErr != nil {
+		return d.s.sessionErr
+	}
+	d.s.sessions[sess.SessionID] = sess
+	return nil
+}
+
+func (d sessionStore) Rotate(ctx context.Context, oldHash, newHash []byte, expiresAt, now time.Time) (*service.Session, error) {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	if d.s.sessionErr != nil {
+		return nil, d.s.sessionErr
+	}
+	for id, sess := range d.s.sessions {
+		if bytes.Equal(sess.RefreshHash, oldHash) && sess.ExpiresAt.After(now) {
+			sess.RefreshHash, sess.ExpiresAt = newHash, expiresAt
+			d.s.sessions[id] = sess
+			return &sess, nil
+		}
+	}
+	return nil, service.ErrNotFound
+}
+
+func (d sessionStore) DeleteByHash(ctx context.Context, hash []byte) error {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	if d.s.sessionErr != nil {
+		return d.s.sessionErr
+	}
+	for id, sess := range d.s.sessions {
+		if bytes.Equal(sess.RefreshHash, hash) {
+			delete(d.s.sessions, id)
+			return nil
+		}
+	}
+	return service.ErrNotFound
+}
+
+func (d sessionStore) Delete(ctx context.Context, id uuid.UUID) error {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	if d.s.sessionErr != nil {
+		return d.s.sessionErr
+	}
+	if _, ok := d.s.sessions[id]; !ok {
+		return service.ErrNotFound
+	}
+	delete(d.s.sessions, id)
+	return nil
+}
+
+func (d sessionStore) DeleteForPeer(ctx context.Context, peerID uuid.UUID) error {
+	d.s.mu.Lock()
+	defer d.s.mu.Unlock()
+	if d.s.sessionErr != nil {
+		return d.s.sessionErr
+	}
+	for id, sess := range d.s.sessions {
+		if sess.PeerID == peerID {
+			delete(d.s.sessions, id)
+		}
+	}
+	return nil
+}
+
+func (d sessionStore) DeleteExpired(ctx context.Context, now time.Time) error { return nil }
+
 // ---- Harness ----
 
 const (
 	cookieName        = "session"
+	refreshCookie     = "refresh"
 	postLoginRedirect = "http://localhost:3000/"
 )
 
 type authEnv struct {
 	mux      *http.ServeMux
 	provider *fakeProvider
-	sessions *fakeSessions
+	tokens   *fakeTokens
 	store    *peerStore
 }
 
@@ -138,13 +284,21 @@ func newAuthEnv(t *testing.T) *authEnv {
 	t.Helper()
 	e := &authEnv{
 		provider: &fakeProvider{identities: map[string]handler.Identity{}},
-		sessions: &fakeSessions{issued: map[string]uuid.UUID{}},
-		store:    &peerStore{peers: map[uuid.UUID]model.Peer{}},
+		tokens:   &fakeTokens{issued: map[string]issuedToken{}},
+		store: &peerStore{
+			peers:    map[uuid.UUID]model.Peer{},
+			logins:   map[string]service.DesktopLogin{},
+			codes:    map[string]service.DesktopAuthCode{},
+			sessions: map[uuid.UUID]service.Session{},
+		},
 	}
+	svc := service.New(e.store)
 	h := handler.NewAuthHandler(handler.AuthConfig{
 		Providers:         map[string]handler.OAuthProvider{"google": e.provider},
-		Sessions:          e.sessions,
-		Peers:             service.New(e.store).Peers,
+		Tokens:            e.tokens,
+		Sessions:          svc.Sessions,
+		Peers:             svc.Peers,
+		Desktop:           svc.Desktop,
 		CookieName:        cookieName,
 		PostLoginRedirect: postLoginRedirect,
 	})
@@ -152,7 +306,11 @@ func newAuthEnv(t *testing.T) *authEnv {
 	e.mux = http.NewServeMux()
 	e.mux.HandleFunc("GET /auth/{provider}/login", h.Login)
 	e.mux.HandleFunc("GET /auth/{provider}/callback", h.Callback)
+	e.mux.HandleFunc("POST /auth/token", h.Token)
+	e.mux.HandleFunc("POST /auth/refresh", h.Refresh)
 	e.mux.HandleFunc("POST /auth/logout", h.Logout)
+	authed := middleware.Authenticate(middleware.AuthConfig{Verifier: e.tokens, CookieName: cookieName})
+	e.mux.Handle("POST /auth/logout-all", authed(http.HandlerFunc(h.LogoutAll)))
 	return e
 }
 
@@ -260,9 +418,16 @@ func TestCallbackSignsUpThenSignsIn(t *testing.T) {
 		t.Error("callback did not clear the one-time state cookie")
 	}
 
-	peerID, ok := e.sessions.issued[session.Value]
-	if !ok {
-		t.Fatal("session cookie is not a token issued by the session manager")
+	peerID := e.tokens.peer(session.Value)
+	if peerID == uuid.Nil {
+		t.Fatal("session cookie is not an issued access token")
+	}
+	refresh := findCookie(rec, refreshCookie)
+	if refresh == nil || refresh.Value == "" || !refresh.HttpOnly || refresh.Path != "/auth" {
+		t.Fatalf("refresh cookie = %+v, want HttpOnly with Path=/auth", refresh)
+	}
+	if len(e.store.sessions) != 1 {
+		t.Fatalf("%d sessions stored, want 1", len(e.store.sessions))
 	}
 	peer, err := e.store.Get(context.Background(), peerID)
 	if err != nil {
@@ -279,7 +444,7 @@ func TestCallbackSignsUpThenSignsIn(t *testing.T) {
 	if second == nil {
 		t.Fatalf("second sign-in: status %d, no session cookie", rec.Code)
 	}
-	if e.sessions.issued[second.Value] != peerID {
+	if e.tokens.peer(second.Value) != peerID {
 		t.Error("second sign-in created a different peer")
 	}
 	if len(e.store.peers) != 1 {
@@ -312,7 +477,7 @@ func TestCallbackDisplayNameFallbacks(t *testing.T) {
 			if session == nil {
 				t.Fatalf("status %d, no session cookie", rec.Code)
 			}
-			p, err := e.store.Get(context.Background(), e.sessions.issued[session.Value])
+			p, err := e.store.Get(context.Background(), e.tokens.peer(session.Value))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -408,38 +573,141 @@ func TestCallbackExchangeFailure(t *testing.T) {
 	}
 }
 
-// ---- Logout ----
+// ---- Refresh and logout ----
 
-func TestLogout(t *testing.T) {
+// browserSignIn signs a browser in and returns its access and refresh cookies.
+func (e *authEnv) browserSignIn(t *testing.T) (access, refresh *http.Cookie) {
+	t.Helper()
+	e.provider.identities["c"] = handler.Identity{Subject: "sub-1", Name: "Ada"}
+	state := e.login(t)
+	rec := e.callback(url.Values{"state": {state.Value}, "code": {"c"}}, state)
+	access, refresh = findCookie(rec, cookieName), findCookie(rec, refreshCookie)
+	if access == nil || refresh == nil {
+		t.Fatalf("sign-in: status %d, cookies %v", rec.Code, rec.Result().Cookies())
+	}
+	return access, refresh
+}
+
+func (e *authEnv) post(path, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	return e.do(req)
+}
+
+func TestBrowserRefreshUsesCookies(t *testing.T) {
+	e := newAuthEnv(t)
+	access, refresh := e.browserSignIn(t)
+
+	rec := e.post("/auth/refresh", "", refresh)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "Token") {
+		t.Errorf("cookie refresh exposed tokens in the body: %s", rec.Body.String())
+	}
+	newAccess, newRefresh := findCookie(rec, cookieName), findCookie(rec, refreshCookie)
+	if newAccess == nil || newAccess.Value == access.Value || newRefresh == nil || newRefresh.Value == refresh.Value {
+		t.Fatal("refresh did not set new access and refresh cookies")
+	}
+	if e.tokens.peer(newAccess.Value) != e.tokens.peer(access.Value) {
+		t.Error("new access token is for another peer")
+	}
+
+	// The old refresh token is spent; a failed cookie refresh clears the cookies.
+	rec = e.post("/auth/refresh", "", refresh)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("spent refresh token: status %d, want 401", rec.Code)
+	}
+	if c := findCookie(rec, refreshCookie); c == nil || c.MaxAge >= 0 {
+		t.Error("failed refresh did not clear the refresh cookie")
+	}
+}
+
+func TestRefreshWithoutToken(t *testing.T) {
+	e := newAuthEnv(t)
+	if rec := e.post("/auth/refresh", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if rec := e.post("/auth/refresh", `{"refreshToken":"nope"}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown token: status = %d, want 401", rec.Code)
+	}
+}
+
+func TestLogoutEndsTheSession(t *testing.T) {
 	tests := []struct {
-		name      string
-		revokeErr error
-		wantCode  int
-		wantClear bool
+		name    string
+		cookies func(access, refresh *http.Cookie) []*http.Cookie
 	}{
-		{"revoked", nil, http.StatusNoContent, true},
-		{"already expired", middleware.ErrInvalidToken, http.StatusNoContent, true},
-		{"store unavailable", errors.New("db down"), http.StatusServiceUnavailable, false},
+		{"with the refresh cookie", func(a, r *http.Cookie) []*http.Cookie { return []*http.Cookie{a, r} }},
+		// The access cookie alone names the session (expired ones too).
+		{"with only the access token", func(a, r *http.Cookie) []*http.Cookie { return []*http.Cookie{a} }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newAuthEnv(t)
-			e.sessions.revokeErr = tt.revokeErr
+			access, refresh := e.browserSignIn(t)
 
-			req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
-			req.AddCookie(&http.Cookie{Name: cookieName, Value: "tok-abc"})
-			rec := e.do(req)
-
-			if rec.Code != tt.wantCode {
-				t.Fatalf("status = %d, want %d", rec.Code, tt.wantCode)
+			rec := e.post("/auth/logout", "", tt.cookies(access, refresh)...)
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204", rec.Code)
 			}
-			if len(e.sessions.revoked) != 1 || e.sessions.revoked[0] != "tok-abc" {
-				t.Errorf("revoked = %v, want [tok-abc]", e.sessions.revoked)
+			if len(e.store.sessions) != 0 {
+				t.Error("session still stored after logout")
 			}
-			c := findCookie(rec, cookieName)
-			if cleared := c != nil && c.MaxAge < 0; cleared != tt.wantClear {
-				t.Errorf("session cookie cleared = %v, want %v", cleared, tt.wantClear)
+			for _, name := range []string{cookieName, refreshCookie} {
+				if c := findCookie(rec, name); c == nil || c.MaxAge >= 0 {
+					t.Errorf("cookie %s not cleared", name)
+				}
+			}
+			if rec := e.post("/auth/refresh", "", refresh); rec.Code != http.StatusUnauthorized {
+				t.Errorf("refresh after logout: status %d, want 401", rec.Code)
 			}
 		})
+	}
+}
+
+func TestLogoutIsIdempotent(t *testing.T) {
+	e := newAuthEnv(t)
+	for _, body := range []string{"", `{"refreshToken":"unknown"}`} {
+		if rec := e.post("/auth/logout", body); rec.Code != http.StatusNoContent {
+			t.Errorf("logout with body %q: status %d, want 204", body, rec.Code)
+		}
+	}
+}
+
+func TestLogoutStoreUnavailable(t *testing.T) {
+	e := newAuthEnv(t)
+	_, refresh := e.browserSignIn(t)
+	e.store.sessionErr = errors.New("db down")
+
+	rec := e.post("/auth/logout", "", refresh)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if findCookie(rec, refreshCookie) != nil {
+		t.Error("cookies cleared although the session could not be ended")
+	}
+}
+
+func TestLogoutAll(t *testing.T) {
+	e := newAuthEnv(t)
+	access, refresh := e.browserSignIn(t)
+	_, other := e.browserSignIn(t) // a second device of the same user
+
+	if rec := e.post("/auth/logout-all", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("without a session: status %d, want 401", rec.Code)
+	}
+	if rec := e.post("/auth/logout-all", "", access); rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	for _, r := range []*http.Cookie{refresh, other} {
+		if rec := e.post("/auth/refresh", "", r); rec.Code != http.StatusUnauthorized {
+			t.Errorf("refresh after logout-all: status %d, want 401", rec.Code)
+		}
 	}
 }

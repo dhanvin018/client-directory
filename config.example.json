@@ -16,12 +16,14 @@
   },
   "auth": {
     "jwtSecret": "",
-    "jwtDuration": "24h",
+    "jwtDuration": "15m",
+    "sessionDuration": "720h",
     "cookieSecure": false,
     "postLoginRedirect": "http://localhost:3000/"
   },
   "invites": {
-    "linkBaseUrl": "http://localhost:3000/invite/"
+    "linkBaseUrl": "http://localhost:3000/invite/",
+    "appLinkBaseUrl": "collabdoc://invite/"
   },
   "oauth": {
     "google": {

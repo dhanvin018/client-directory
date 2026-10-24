@@ -38,8 +38,11 @@ func NewGoogleAdapter(clientID, clientSecret, redirectURL string) *GoogleAdapter
 	}
 }
 
+// AuthCodeURL asks for online access only. Google is used to identify the
+// user at sign-in, never to call Google APIs later, so the directory has no
+// use for a Google refresh token and should not be handed one.
 func (g *GoogleAdapter) AuthCodeURL(state string) string {
-	return g.config.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	return g.config.AuthCodeURL(state)
 }
 
 func (g *GoogleAdapter) Exchange(ctx context.Context, code string) (handler.Identity, error) {

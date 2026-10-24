@@ -2,8 +2,8 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -12,102 +12,84 @@ import (
 	"github.com/dhanvin018/client-directory/internal/middleware"
 )
 
-// Both errors wrap middleware.ErrInvalidToken, which is the TokenVerifier
-// contract: Authenticate answers them with 401. Any other error from Verify
-// would be treated as an outage (503).
-var (
-	ErrInvalidToken = fmt.Errorf("%w: invalid or expired token", middleware.ErrInvalidToken)
-	ErrTokenRevoked = fmt.Errorf("%w: token has been revoked", middleware.ErrInvalidToken)
-)
+// ErrInvalidToken wraps middleware.ErrInvalidToken, which is the
+// TokenVerifier contract: Authenticate answers it with 401. Any other error
+// from Verify would be treated as an outage (503).
+var ErrInvalidToken = fmt.Errorf("%w: invalid or expired token", middleware.ErrInvalidToken)
 
-// Claims defines the custom JWT claims containing the peer ID.
+// Claims are the access token's claims: the peer and the session it belongs to.
 type Claims struct {
-	PeerID uuid.UUID `json:"peer_id"`
+	PeerID    uuid.UUID `json:"peer_id"`
+	SessionID uuid.UUID `json:"sid"`
 	jwt.RegisteredClaims
 }
 
-// JWTSessionManager implements both SessionManager and middleware.TokenVerifier.
-type JWTSessionManager struct {
-	secretKey     []byte
-	tokenDuration time.Duration
-
-	// mu and revokedTokens provide a lightweight in-memory revocation list
-	// for stateless JWTs. For multi-instance scaling, replace this with Redis/DB.
-	mu            sync.RWMutex
-	revokedTokens map[string]bool
+// AccessTokens signs and checks short-lived access tokens (HS256 JWTs).
+//
+// Verify needs no database: that is the point of a JWT. The price is that a
+// token cannot be withdrawn, so it is kept short-lived; logout ends the
+// session in the database (service.SessionService), after which no new
+// access tokens are issued for it. It implements middleware.TokenVerifier.
+type AccessTokens struct {
+	secretKey []byte
+	ttl       time.Duration
+	now       func() time.Time
 }
 
-// NewJWTSessionManager creates a new JWT-based session manager.
-func NewJWTSessionManager(secretKey string, tokenDuration time.Duration) *JWTSessionManager {
-	return &JWTSessionManager{
-		secretKey:     []byte(secretKey),
-		tokenDuration: tokenDuration,
-		revokedTokens: make(map[string]bool),
-	}
+func NewAccessTokens(secretKey string, ttl time.Duration) *AccessTokens {
+	return &AccessTokens{secretKey: []byte(secretKey), ttl: ttl, now: time.Now}
 }
 
-// Issue generates a signed JWT for the given peer ID.
-func (m *JWTSessionManager) Issue(ctx context.Context, peerID uuid.UUID) (string, time.Time, error) {
-	expiresAt := time.Now().Add(m.tokenDuration)
-
-	// Generate a unique token ID (jti) to allow individual token revocation
-	jti := uuid.New().String()
-
+// Issue signs an access token for a peer's session.
+func (m *AccessTokens) Issue(ctx context.Context, peerID, sessionID uuid.UUID) (string, time.Time, error) {
+	now := m.now()
+	expiresAt := now.Add(m.ttl)
 	claims := Claims{
-		PeerID: peerID,
+		PeerID:    peerID,
+		SessionID: sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ID:        jti,
+			ID:        uuid.NewString(),
 			Subject:   peerID.String(),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			IssuedAt:  jwt.NewNumericDate(now),
 		},
 	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signedToken, err := token.SignedString(m.secretKey)
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(m.secretKey)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("failed to sign token: %w", err)
 	}
-
-	return signedToken, expiresAt, nil
+	return signed, expiresAt, nil
 }
 
-// Verify validates the JWT and returns the associated PeerID.
-func (m *JWTSessionManager) Verify(ctx context.Context, tokenString string) (uuid.UUID, error) {
-	// Check if token is revoked
-	m.mu.RLock()
-	isRevoked := m.revokedTokens[tokenString]
-	m.mu.RUnlock()
-
-	if isRevoked {
-		return uuid.Nil, ErrTokenRevoked
+// Verify checks the signature and expiry and returns the peer.
+func (m *AccessTokens) Verify(ctx context.Context, token string) (uuid.UUID, error) {
+	c, err := m.parse(token)
+	if err != nil {
+		return uuid.Nil, err
 	}
-
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (any, error) {
-		// Ensure signing method is HMAC
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return m.secretKey, nil
-	})
-
-	if err != nil || !token.Valid {
-		return uuid.Nil, ErrInvalidToken
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok {
-		return uuid.Nil, ErrInvalidToken
-	}
-
-	return claims.PeerID, nil
+	return c.PeerID, nil
 }
 
-// Revoke adds the token to the revocation list.
-func (m *JWTSessionManager) Revoke(ctx context.Context, tokenString string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// SessionID returns the session a token belongs to. It checks the signature
+// but not the expiry, so a client can still log out with an expired token.
+func (m *AccessTokens) SessionID(ctx context.Context, token string) (uuid.UUID, error) {
+	c, err := m.parse(token, jwt.WithoutClaimsValidation())
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return c.SessionID, nil
+}
 
-	m.revokedTokens[tokenString] = true
-	return nil
+func (m *AccessTokens) parse(token string, opts ...jwt.ParserOption) (*Claims, error) {
+	opts = append(opts, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithTimeFunc(m.now))
+	var c Claims
+	_, err := jwt.ParseWithClaims(token, &c, func(*jwt.Token) (any, error) { return m.secretKey, nil }, opts...)
+	if err != nil {
+		return nil, errors.Join(ErrInvalidToken, err)
+	}
+	// Every token names a session; one that does not predates sessions.
+	if c.PeerID == uuid.Nil || c.SessionID == uuid.Nil {
+		return nil, ErrInvalidToken
+	}
+	return &c, nil
 }

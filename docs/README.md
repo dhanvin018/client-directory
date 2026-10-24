@@ -11,7 +11,10 @@ editor clients (see [roadmap.md](roadmap.md)).
 | [architecture.md](architecture.md) | Low-level design: layers, request lifecycle, transactions and locking, authorization, errors, audit events |
 | [data-model.md](data-model.md) | Every model and table, constraints, relationships, the migration history |
 | [api.md](api.md) | Every HTTP endpoint: who may call it, request and response, status codes |
+| [authentication.md](authentication.md) | The complete sign-in and session design: OAuth 2.0 (browser and desktop/PKCE), JWT access tokens, refresh tokens, logout, cookies, threat model |
+| [invites.md](invites.md) | Joining rooms in depth: private-room invites, public joins, bans, the invite lifecycle, concurrency, client guide |
 | [flows.md](flows.md) | Sequence diagrams: sign-in, invites, public join, bans |
+| [desktop-clients.md](desktop-clients.md) | How the desktop app signs in and talks to the directory; web vs desktop communication |
 | [decisions.md](decisions.md) | Decision log: what was decided, why, and what is still open |
 | [operations.md](operations.md) | Configuration, migrations, Docker, CI, running the tests |
 | [roadmap.md](roadmap.md) | What is left to build, and known issues |
@@ -44,7 +47,7 @@ internal/
   router/        route table and route groups
   middleware/    request IDs, logging, panic recovery, CORS, authentication
   handler/       HTTP <-> service translation (one file per resource)
-  auth/          JWT session manager
+  auth/          access tokens (JWTs); sessions live in service + Postgres
   oauth/         Google OAuth adapter
   service/       business rules, repository interfaces, errors
   repository/    PostgreSQL implementations of the repository interfaces

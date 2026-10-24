@@ -55,6 +55,8 @@ func (b base) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, service.ErrRateLimited):
 		writeError(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, service.ErrUnauthenticated):
+		unauthorized(w, err.Error())
 	case errors.Is(err, context.Canceled):
 		writeError(w, statusClientClosedRequest, "request cancelled")
 	default:
@@ -84,6 +86,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func unauthorized(w http.ResponseWriter, msg string) {
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	writeError(w, http.StatusUnauthorized, msg)
 }
 
 func noContent(w http.ResponseWriter) { w.WriteHeader(http.StatusNoContent) }

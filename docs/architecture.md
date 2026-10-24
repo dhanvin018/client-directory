@@ -14,7 +14,7 @@ The directory owns identity and collaboration metadata:
 - **Invites, bans, and an append-only audit log per room.**
 
 Out of scope: document content, real-time sync, presence and comments. Those
-belong to the collaboration server (not built yet).
+belong to the collaboration server.
 
 ## 2. Layers
 
@@ -50,11 +50,11 @@ Example: `POST /api/v1/rooms/{roomId}/invites`.
    `Recover` turns a panic into a 500; `CORS` answers preflights.
 2. `Authenticate` reads the token from `Authorization: Bearer …` or the
    `session` cookie, verifies it and stores the peer ID in the context. Missing
-   or invalid token (bad signature, expired, revoked): 401. Any other
-   verification error means the session store failed and gets 503, so an
+   or invalid token (bad signature, expired, no session ID): 401. Any other
+   verification error would mean a token store failed and gets 503, so an
    outage does not look like a forced logout. A `TokenVerifier` signals a bad
-   token by returning an error that wraps `middleware.ErrInvalidToken`;
-   `auth.ErrInvalidToken` and `auth.ErrTokenRevoked` both do.
+   token by returning an error that wraps `middleware.ErrInvalidToken`, as
+   `auth.ErrInvalidToken` does. Verification never touches the database.
 3. The router matches `POST /api/v1/rooms/{roomId}/invites` and calls
    `InviteHandler.Create`.
 4. The handler parses `{roomId}` and the body, then calls
@@ -153,13 +153,33 @@ Deleting a room deletes its log (cascade), so `Rooms.Delete` writes no event.
 
 - Sign-in is OAuth 2.0 with Google (`oauth.GoogleAdapter`). A CSRF `state`
   value is stored in a short-lived cookie and checked on the callback.
+- Two kinds of client finish sign-in differently. A **browser** gets the
+  session as an `HttpOnly` cookie. A **desktop app** starts sign-in with a
+  loopback `redirect_uri` and a PKCE challenge, receives a one-time code on its
+  loopback listener and trades it at `POST /auth/token` for a bearer token
+  (`service.DesktopLoginService`). See [desktop-clients.md](desktop-clients.md).
 - The first sign-in with an identity creates the peer (sign-up), with a handle
   generated from the display name. Later sign-ins return the same peer.
-- Sessions are HS256 JWTs (`auth.JWTSessionManager`) with claims `peer_id`,
-  `sub`, `jti`, `iat`, `exp`; lifetime `auth.jwtDuration` (24h). The token is
-  set as the `session` cookie and is also accepted as a bearer token.
-- Logout adds the token to an in-memory revocation list (see
-  [roadmap.md](roadmap.md#known-issues)).
+- Every sign-in starts a **session**: a row in the `sessions` table
+  (`service.SessionService`), one per signed-in device. It holds the SHA-256
+  of the session's refresh token.
+- **Access tokens** are HS256 JWTs (`auth.AccessTokens`) with claims
+  `peer_id`, `sid` (session ID), `sub`, `jti`, `iat`, `exp`; lifetime
+  `auth.jwtDuration` (15 min). They are verified by signature and expiry
+  alone, with no database lookup, so ordinary API requests never query the
+  sessions table. A browser gets the access token as the `session` cookie; a
+  desktop app sends it as a bearer token.
+- **Refresh tokens** (256 random bits) get new access tokens at
+  `POST /auth/refresh`. Each use rotates the token and extends the session to
+  `auth.sessionDuration` (30 days) from now; a single `UPDATE … WHERE
+  refresh_hash = old` makes rotation atomic. A spent token presented again
+  ends the session (reuse detection).
+- **Logout** deletes the session row. That is durable across restarts and
+  shared by every instance. Access tokens already issued stay valid until
+  they expire (at most 15 min), the accepted trade-off for lookup-free
+  verification (decisions P13–P17). `POST /auth/logout-all` deletes every
+  session of the peer.
+- Expired sessions are purged whenever a new session starts.
 
 ## 9. Time and IDs
 
@@ -174,11 +194,12 @@ limits).
 | Suite | Runs against | Proves |
 |---|---|---|
 | `service_test` | in-memory store with rollback | business rules, authorization, event order |
-| `handler` (auth) | fake provider and sessions | OAuth flow, cookies, error paths |
+| `auth` | access tokens directly and behind `Authenticate` | every bad token is 401; expired tokens still name their session |
+| `handler` (auth) | fake provider, fake tokens, in-memory sessions | OAuth flow, cookies, desktop loopback + PKCE flow, refresh, logout, logout-all, error paths |
 | `oauth` | fake Google over HTTP; opt-in live check | token exchange, userinfo, real credentials |
 | `main` (config) | temp files and env | config precedence, validation |
 | `repostiory_test` | real Postgres | SQL, constraints, cascades, concurrency, migrations |
-| `repostiory_test/api_test.go` | real router, handlers, JWTs, Postgres | HTTP status codes, routing, JSON shapes |
+| `repostiory_test/api_test.go` | real router, handlers, JWTs, Postgres | HTTP status codes, routing, JSON shapes, desktop sign-in and refresh end to end, logout surviving a restart |
 
 The Postgres suites only run when `TEST_DATABASE_URL` is set, because they
 empty every table.

@@ -13,27 +13,35 @@ type InviteHandler struct {
 	base
 	svc *service.InviteService
 
-	// linkBase is prepended to an invite's code to build the link sent to the
-	// invitee, e.g. "http://localhost:3000/invite/". The client app owns that
-	// route and calls this API from it.
+	// linkBase is prepended to an invite's code to build the shareable web
+	// link, e.g. "http://localhost:3000/invite/": a page that opens the
+	// desktop app (or explains how to get it).
 	linkBase string
+	// appLinkBase builds the deep link that opens the desktop app directly,
+	// e.g. "collabdoc://invite/". Empty means no appUrl in responses.
+	appLinkBase string
 }
 
-func NewInviteHandler(svc *service.InviteService, linkBase string, log *slog.Logger) *InviteHandler {
+func NewInviteHandler(svc *service.InviteService, linkBase, appLinkBase string, log *slog.Logger) *InviteHandler {
 	if linkBase == "" {
 		panic("handler: invite link base is required")
 	}
-	return &InviteHandler{base: newBase(log), svc: svc, linkBase: linkBase}
+	return &InviteHandler{base: newBase(log), svc: svc, linkBase: linkBase, appLinkBase: appLinkBase}
 }
 
-// inviteResponse is an invite plus its ready-to-send link.
+// inviteResponse is an invite plus its ready-to-send links.
 type inviteResponse struct {
 	model.RoomInvite
-	URL string `json:"url"`
+	URL    string `json:"url"`              // web link, works anywhere
+	AppURL string `json:"appUrl,omitempty"` // deep link into the desktop app
 }
 
 func (h *InviteHandler) withLink(inv model.RoomInvite) inviteResponse {
-	return inviteResponse{RoomInvite: inv, URL: h.linkBase + inv.Code}
+	resp := inviteResponse{RoomInvite: inv, URL: h.linkBase + inv.Code}
+	if h.appLinkBase != "" {
+		resp.AppURL = h.appLinkBase + inv.Code
+	}
+	return resp
 }
 
 func (h *InviteHandler) withLinks(invites []model.RoomInvite) []inviteResponse {

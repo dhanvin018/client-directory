@@ -19,29 +19,30 @@ import (
 func TestBadTokensAreUnauthorized(t *testing.T) {
 	const secret = "test-secret-key-min-32-bytes-long-change-me"
 	ctx := context.Background()
-	m := NewJWTSessionManager(secret, time.Minute)
+	m := NewAccessTokens(secret, time.Minute)
 
-	valid, _, err := m.Issue(ctx, uuid.New())
+	valid, _, err := m.Issue(ctx, uuid.New(), uuid.New())
 	if err != nil {
 		t.Fatal(err)
 	}
-	revoked, _, err := m.Issue(ctx, uuid.New())
+	expired, _, err := NewAccessTokens(secret, -time.Minute).Issue(ctx, uuid.New(), uuid.New())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Revoke(ctx, revoked); err != nil {
-		t.Fatal(err)
-	}
-	expired, _, err := NewJWTSessionManager(secret, -time.Minute).Issue(ctx, uuid.New())
+	otherKey, _, err := NewAccessTokens("a-different-secret-also-32-bytes-long!", time.Minute).Issue(ctx, uuid.New(), uuid.New())
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherKey, _, err := NewJWTSessionManager("a-different-secret-also-32-bytes-long!", time.Minute).Issue(ctx, uuid.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	noneAlg, err := jwt.NewWithClaims(jwt.SigningMethodNone, Claims{PeerID: uuid.New()}).
+	noneAlg, err := jwt.NewWithClaims(jwt.SigningMethodNone, Claims{PeerID: uuid.New(), SessionID: uuid.New()}).
 		SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Signed correctly but from before sessions existed: no session ID.
+	noSession, err := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
+		PeerID:           uuid.New(),
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))},
+	}).SignedString([]byte(secret))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,10 +56,10 @@ func TestBadTokensAreUnauthorized(t *testing.T) {
 		want  int
 	}{
 		{"valid", valid, http.StatusOK},
-		{"revoked", revoked, http.StatusUnauthorized},
 		{"expired", expired, http.StatusUnauthorized},
 		{"signed with another key", otherKey, http.StatusUnauthorized},
 		{"unsigned (alg none)", noneAlg, http.StatusUnauthorized},
+		{"no session ID", noSession, http.StatusUnauthorized},
 		{"garbage", "not.a.jwt", http.StatusUnauthorized},
 	}
 	for _, tt := range tests {
@@ -79,8 +80,4 @@ func TestBadTokensAreUnauthorized(t *testing.T) {
 		})
 	}
 
-	// The package's own sentinels still match, so existing callers keep working.
-	if _, err := m.Verify(ctx, revoked); !errors.Is(err, ErrTokenRevoked) {
-		t.Errorf("revoked token error %v is not ErrTokenRevoked", err)
-	}
 }

@@ -6,6 +6,7 @@ package service_test
 // every change when fn returns an error.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -47,6 +48,9 @@ type memData struct {
 	events   map[uuid.UUID][]model.RoomEvent
 	invites  map[uuid.UUID]inviteRow
 	bans     map[memberKey]banRow
+	logins   map[string]service.DesktopLogin
+	codes    map[string]service.DesktopAuthCode // keyed by string(code hash)
+	sessions map[uuid.UUID]sessionRow
 }
 
 type inviteRow struct {
@@ -73,6 +77,9 @@ func newMemData() *memData {
 		events:   map[uuid.UUID][]model.RoomEvent{},
 		invites:  map[uuid.UUID]inviteRow{},
 		bans:     map[memberKey]banRow{},
+		logins:   map[string]service.DesktopLogin{},
+		codes:    map[string]service.DesktopAuthCode{},
+		sessions: map[uuid.UUID]sessionRow{},
 	}
 }
 
@@ -100,6 +107,15 @@ func (d *memData) clone() *memData {
 	for k, v := range d.bans {
 		c.bans[k] = v
 	}
+	for k, v := range d.logins {
+		c.logins[k] = v
+	}
+	for k, v := range d.codes {
+		c.codes[k] = v
+	}
+	for k, v := range d.sessions {
+		c.sessions[k] = v
+	}
 	for k, v := range d.events {
 		c.events[k] = append([]model.RoomEvent(nil), v...)
 	}
@@ -121,6 +137,10 @@ func (s *memStore) Members() service.MemberRepository     { return memberRepo{s}
 func (s *memStore) Events() service.EventRepository       { return eventRepo{s} }
 func (s *memStore) Invites() service.InviteRepository     { return inviteRepo{s} }
 func (s *memStore) Bans() service.BanRepository           { return banRepo{s} }
+func (s *memStore) DesktopLogins() service.DesktopLoginRepository {
+	return desktopLoginRepo{s}
+}
+func (s *memStore) Sessions() service.SessionRepository { return sessionRepo{s} }
 
 func (s *memStore) WithTx(ctx context.Context, fn func(service.Repos) error) (err error) {
 	s.txMu.Lock()
@@ -859,4 +879,140 @@ func (r banRepo) List(ctx context.Context, roomID uuid.UUID) ([]model.RoomBan, e
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].BannedAt.After(out[j].BannedAt) })
 	return out, nil
+}
+
+// ---- Desktop sign-in ----
+
+type desktopLoginRepo struct{ s *memStore }
+
+func (r desktopLoginRepo) SaveLogin(ctx context.Context, l service.DesktopLogin) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	if _, ok := r.s.data.logins[l.State]; ok {
+		return dup("desktop login")
+	}
+	r.s.data.logins[l.State] = l
+	return nil
+}
+
+func (r desktopLoginRepo) TakeLogin(ctx context.Context, state string, now time.Time) (*service.DesktopLogin, error) {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	l, ok := r.s.data.logins[state]
+	if !ok || !l.ExpiresAt.After(now) {
+		return nil, notFound("desktop login")
+	}
+	delete(r.s.data.logins, state)
+	return &l, nil
+}
+
+func (r desktopLoginRepo) SaveCode(ctx context.Context, c service.DesktopAuthCode) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	r.s.data.codes[string(c.CodeHash)] = c
+	return nil
+}
+
+func (r desktopLoginRepo) TakeCode(ctx context.Context, codeHash []byte, now time.Time) (*service.DesktopAuthCode, error) {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	c, ok := r.s.data.codes[string(codeHash)]
+	if !ok || !c.ExpiresAt.After(now) {
+		return nil, notFound("desktop code")
+	}
+	delete(r.s.data.codes, string(codeHash))
+	return &c, nil
+}
+
+func (r desktopLoginRepo) DeleteExpired(ctx context.Context, now time.Time) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	for k, l := range r.s.data.logins {
+		if !l.ExpiresAt.After(now) {
+			delete(r.s.data.logins, k)
+		}
+	}
+	for k, c := range r.s.data.codes {
+		if !c.ExpiresAt.After(now) {
+			delete(r.s.data.codes, k)
+		}
+	}
+	return nil
+}
+
+// ---- Sessions ----
+
+type sessionRow struct {
+	service.Session
+	previousHash []byte
+}
+
+type sessionRepo struct{ s *memStore }
+
+func (r sessionRepo) Create(ctx context.Context, sess service.Session) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	if _, ok := r.s.data.sessions[sess.SessionID]; ok {
+		return dup("session")
+	}
+	r.s.data.sessions[sess.SessionID] = sessionRow{Session: sess}
+	return nil
+}
+
+func (r sessionRepo) Rotate(ctx context.Context, oldHash, newHash []byte, expiresAt, now time.Time) (*service.Session, error) {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	for id, row := range r.s.data.sessions {
+		if bytes.Equal(row.RefreshHash, oldHash) && row.ExpiresAt.After(now) {
+			row.previousHash, row.RefreshHash, row.ExpiresAt = row.RefreshHash, newHash, expiresAt
+			r.s.data.sessions[id] = row
+			out := row.Session
+			return &out, nil
+		}
+	}
+	return nil, notFound("session")
+}
+
+func (r sessionRepo) DeleteByHash(ctx context.Context, hash []byte) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	for id, row := range r.s.data.sessions {
+		if bytes.Equal(row.RefreshHash, hash) || bytes.Equal(row.previousHash, hash) {
+			delete(r.s.data.sessions, id)
+			return nil
+		}
+	}
+	return notFound("session")
+}
+
+func (r sessionRepo) Delete(ctx context.Context, id uuid.UUID) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	if _, ok := r.s.data.sessions[id]; !ok {
+		return notFound("session")
+	}
+	delete(r.s.data.sessions, id)
+	return nil
+}
+
+func (r sessionRepo) DeleteForPeer(ctx context.Context, peerID uuid.UUID) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	for id, row := range r.s.data.sessions {
+		if row.PeerID == peerID {
+			delete(r.s.data.sessions, id)
+		}
+	}
+	return nil
+}
+
+func (r sessionRepo) DeleteExpired(ctx context.Context, now time.Time) error {
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	for id, row := range r.s.data.sessions {
+		if !row.ExpiresAt.After(now) {
+			delete(r.s.data.sessions, id)
+		}
+	}
+	return nil
 }

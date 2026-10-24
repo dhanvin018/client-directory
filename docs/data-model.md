@@ -14,6 +14,7 @@ erDiagram
     PEERS ||--o{ ROOM_INVITES : "sends / receives"
     ROOMS ||--o{ ROOM_BANS : bans
     PEERS ||--o{ ROOM_BANS : "is banned by"
+    PEERS ||--o{ SESSIONS : "is signed in via"
 ```
 
 Deleting a room cascades to its documents, members, per-document roles,
@@ -86,7 +87,8 @@ what non-members see of a public room.
 | `createdAt`, `expiresAt` | timestamp | Expires 7 days after creation |
 | `respondedAt` | timestamp, optional | When it left PENDING |
 
-API responses add `url`: the configured link base plus the code.
+API responses add `url` (web link) and `appUrl` (desktop deep link): the
+configured link bases plus the code.
 
 ### InviteCandidate
 
@@ -162,6 +164,31 @@ person is invited again; the service reports it as EXPIRED on every read.
 ### room_bans
 PK `(room_id, peer_id)`; `banned_by` FK peers; `banned_at`.
 
+### desktop_logins
+`state` PK (the OAuth state sent to the provider); `redirect_uri`;
+`code_challenge`; `app_state`; `expires_at` (10 minutes). Deleted when the
+callback consumes it.
+
+### desktop_auth_codes
+`code_hash` BYTEA PK (SHA-256 of the code); `peer_id` FK peers cascade;
+`redirect_uri`; `code_challenge`; `expires_at` (60 seconds). Deleted when
+redeemed. Expired rows of both tables are purged whenever a new desktop
+sign-in starts.
+
+### sessions
+| Column | Type | Constraints |
+|---|---|---|
+| session_id | UUID | PK; the `sid` claim in access tokens |
+| peer_id | UUID | FK peers cascade |
+| refresh_hash | BYTEA | NOT NULL, UNIQUE: SHA-256 of the current refresh token |
+| previous_refresh_hash | BYTEA | UNIQUE: the token it replaced, kept to detect reuse |
+| created_at, refreshed_at | TIMESTAMPTZ | |
+| expires_at | TIMESTAMPTZ | Moved to now + `auth.sessionDuration` on every refresh |
+
+Indexes: `peer_id` (sign out everywhere), `expires_at` (purge). One row per
+signed-in device; logout deletes it. Expired rows are purged whenever a new
+session starts.
+
 ### schema_migrations
 `version` PK, `name`, `applied_at`. Written by the migration runner.
 
@@ -179,6 +206,8 @@ PK `(room_id, peer_id)`; `banned_by` FK peers; `banned_at`.
 | 8 | `0008_room_bans.sql` | room_bans |
 | 9 | `0009_room_invites.sql` | room_invites |
 | 10 | `0010_invite_and_ban_events.sql` | new event types in the room_events CHECK |
+| 11 | `0011_desktop_login.sql` | desktop_logins, desktop_auth_codes |
+| 12 | `0012_sessions.sql` | sessions |
 
 Migrations 1–5 use `IF NOT EXISTS` because they predate the migration runner
 and had to be adopted by databases that already had the tables.

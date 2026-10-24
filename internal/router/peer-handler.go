@@ -11,14 +11,25 @@ type AuthHandler interface {
 	// Callback completes the OAuth flow. First sign-in creates the peer
 	// (sign up); later sign-ins reuse it. Starts the session.
 	Callback(w http.ResponseWriter, r *http.Request)
-	// Logout ends the caller's session.
+	// Token finishes a desktop sign-in: one-time code + PKCE verifier in,
+	// access and refresh tokens out.
+	Token(w http.ResponseWriter, r *http.Request)
+	// Refresh trades a refresh token for new access and refresh tokens.
+	Refresh(w http.ResponseWriter, r *http.Request)
+	// Logout ends the session named by the refresh or access token. Public,
+	// so an expired access token can still log out.
 	Logout(w http.ResponseWriter, r *http.Request)
+	// LogoutAll ends every session of the caller.
+	LogoutAll(w http.ResponseWriter, r *http.Request)
 }
 
 func registerAuthRoutes(public, authed group, h AuthHandler) {
 	public.handle("GET /auth/{provider}/login", h.Login)
 	public.handle("GET /auth/{provider}/callback", h.Callback)
-	authed.handle("POST /auth/logout", h.Logout)
+	public.handle("POST /auth/token", h.Token)
+	public.handle("POST /auth/refresh", h.Refresh)
+	public.handle("POST /auth/logout", h.Logout)
+	authed.handle("POST /auth/logout-all", h.LogoutAll)
 }
 
 // ---- Peers ----

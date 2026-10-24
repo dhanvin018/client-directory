@@ -27,6 +27,8 @@ type Repos interface {
 	Events() EventRepository
 	Invites() InviteRepository
 	Bans() BanRepository
+	DesktopLogins() DesktopLoginRepository
+	Sessions() SessionRepository
 }
 
 // Store is Repos plus transaction support. Calls on the Store itself run
@@ -209,4 +211,64 @@ type BanRepository interface {
 	Remove(ctx context.Context, roomID, peerID uuid.UUID) error // ErrNotFound if not banned
 	IsBanned(ctx context.Context, roomID, peerID uuid.UUID) (bool, error)
 	List(ctx context.Context, roomID uuid.UUID) ([]model.RoomBan, error)
+}
+
+// DesktopLogin is a desktop sign-in waiting for the user to finish at the
+// OAuth provider, keyed by the state sent to the provider.
+type DesktopLogin struct {
+	State         string
+	RedirectURI   string
+	CodeChallenge string
+	AppState      string
+	ExpiresAt     time.Time
+}
+
+// DesktopAuthCode is a one-time code handed to a desktop app after sign-in.
+// Only the SHA-256 of the code is stored.
+type DesktopAuthCode struct {
+	CodeHash      []byte
+	PeerID        uuid.UUID
+	RedirectURI   string
+	CodeChallenge string
+	ExpiresAt     time.Time
+}
+
+// DesktopLoginRepository stores both kinds of short-lived, single-use rows.
+// The Take methods delete the row they return, so each row is used at most
+// once even under concurrent requests.
+type DesktopLoginRepository interface {
+	SaveLogin(ctx context.Context, l DesktopLogin) error
+	// TakeLogin returns and deletes the login; ErrNotFound if there is none
+	// or it expired before now.
+	TakeLogin(ctx context.Context, state string, now time.Time) (*DesktopLogin, error)
+	SaveCode(ctx context.Context, c DesktopAuthCode) error
+	// TakeCode returns and deletes the code; ErrNotFound if there is none or
+	// it expired before now.
+	TakeCode(ctx context.Context, codeHash []byte, now time.Time) (*DesktopAuthCode, error)
+	// DeleteExpired purges rows of both kinds that expired before now.
+	DeleteExpired(ctx context.Context, now time.Time) error
+}
+
+// Session is one signed-in device. Only hashes of refresh tokens are stored.
+type Session struct {
+	SessionID   uuid.UUID
+	PeerID      uuid.UUID
+	RefreshHash []byte
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+}
+
+type SessionRepository interface {
+	Create(ctx context.Context, s Session) error
+	// Rotate replaces the refresh hash of the live session whose current hash
+	// is oldHash, keeps oldHash as its previous hash, and moves its expiry.
+	// ErrNotFound if no live session has oldHash as its current hash. Of two
+	// concurrent rotations with the same hash, exactly one succeeds.
+	Rotate(ctx context.Context, oldHash, newHash []byte, expiresAt, now time.Time) (*Session, error)
+	// DeleteByHash deletes the session whose current or previous refresh hash
+	// is hash; ErrNotFound if there is none.
+	DeleteByHash(ctx context.Context, hash []byte) error
+	Delete(ctx context.Context, sessionID uuid.UUID) error // ErrNotFound if gone
+	DeleteForPeer(ctx context.Context, peerID uuid.UUID) error
+	DeleteExpired(ctx context.Context, now time.Time) error
 }

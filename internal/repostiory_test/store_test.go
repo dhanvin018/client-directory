@@ -57,8 +57,8 @@ func newEnv(t *testing.T) *env {
 		dir = "../../db/migrations"
 	}
 	applyMigrations(t, db, dir)
-	if _, err := db.Exec(`TRUNCATE room_invites, room_bans, room_events, member_doc_roles, members,
-		document_refs, rooms, peers CASCADE`); err != nil {
+	if _, err := db.Exec(`TRUNCATE sessions, desktop_logins, desktop_auth_codes, room_invites, room_bans, room_events,
+		member_doc_roles, members, document_refs, rooms, peers CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 

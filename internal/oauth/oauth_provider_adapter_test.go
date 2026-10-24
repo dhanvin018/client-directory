@@ -114,12 +114,15 @@ func TestAuthCodeURL(t *testing.T) {
 		"redirect_uri":  testRedirectURL,
 		"state":         "state-xyz",
 		"response_type": "code",
-		"access_type":   "offline",
 	}
 	for k, v := range want {
 		if q.Get(k) != v {
 			t.Errorf("%s = %q, want %q", k, q.Get(k), v)
 		}
+	}
+	// No offline access: Google must not issue the directory a refresh token.
+	if q.Has("access_type") && q.Get("access_type") != "online" {
+		t.Errorf("access_type = %q, want online access only", q.Get("access_type"))
 	}
 	scope := q.Get("scope")
 	for _, s := range []string{"userinfo.profile", "userinfo.email"} {

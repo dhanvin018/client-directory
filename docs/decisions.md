@@ -63,8 +63,21 @@ yet confirmed), **Open** (needs a decision).
 | P2 | Unique handle per peer, generated at sign-up from the display name, changeable later | Display names are not unique, so search needs something that is | Decided |
 | P3 | Handle format `^[a-z0-9._]{2,32}$`, stored lowercase, `@` prefix accepted on input | Discord-like; case-insensitive uniqueness | Decided |
 | P4 | Search requires at least 2 characters and returns at most 10 results, exposing only peer ID, handle and display name | Search must not be a way to list every user | Decided |
-| P5 | Sessions are HS256 JWTs (24h), accepted as cookie or bearer token | Stateless verification | Decided (revocation needs work, see roadmap) |
-| P6 | Desktop sign-in: system browser + loopback redirect + PKCE, token in the OS keychain | A desktop app cannot receive the server-set cookie | Proposed (depends on C1) |
+| P5 | Access tokens are HS256 JWTs, accepted as cookie or bearer token | Stateless verification: no lookup per request | Decided (lifetime and logout revised by P13–P17) |
+| P6 | Desktop sign-in: system browser + loopback redirect + PKCE (RFC 8252 / RFC 7636), token in the OS keychain | A desktop app cannot receive the server-set cookie, and an installed app cannot keep a client secret | Decided |
+| P7 | The directory stays the only OAuth client: the app never talks to Google directly | Google's client secret stays on the server; one sign-in implementation for web and desktop; adding providers needs no app release | Decided |
+| P8 | Desktop redirect URIs are loopback IP literals only (`127.0.0.1`, `[::1]`, any port); no `localhost`, no custom schemes | Cannot be an open redirect; `localhost` can resolve elsewhere; custom schemes can be claimed by other apps | Decided |
+| P9 | One-time desktop codes: 256 random bits, 60 s, single use (spent even on a failed attempt), stored as SHA-256 | A code is a bearer credential until redeemed | Decided |
+| P10 | Pending desktop logins and codes live in Postgres, not memory | Work across restarts and multiple instances | Decided |
+| P11 | Desktop sessions reuse the same 24h JWT; no refresh tokens yet | Smallest change; users re-sign-in daily through the browser | Superseded by P13 |
+| P12 | Invites carry a web link (`url`) and a desktop deep link (`appUrl`, `collabdoc://invite/…`) | People without the app need a page to land on | Decided (scheme name is a placeholder) |
+| P13 | **Short access tokens plus refresh tokens stored in Postgres.** Access JWTs last 15 min and are checked without the database; refresh tokens (30 days, sliding) live in a `sessions` table; logout deletes the session row | Replaces the in-memory revocation list, which forgot logouts on restart, was not shared between instances and grew without bound. Long-lived desktop sign-in needs revocation that persists. The database is touched only at sign-in, refresh (about every 15 min per client) and logout, never on ordinary requests | Decided |
+| P14 | **Postgres, not Redis**, for sessions | Refresh tokens are durable data: losing them logs users out, losing a revocation brings back a logged-out session. Redis is in-memory by default and would be a second datastore to run, back up and fail; the speed difference is invisible at a few queries per user per hour. Postgres also gives a foreign key to peers (cascade on delete) and "sign out everywhere" as one `DELETE` | Decided. Revisit when the collaboration server needs Redis for pub/sub; a per-request revocation list could then share it (see P15) |
+| P15 | After logout, access tokens already issued stay valid until they expire (at most 15 min); there is no per-request revocation check | Checking every request against a list would put a lookup on every request, which is what JWTs avoid. Logged-out clients drop their tokens anyway; the window only matters for a stolen access token | Decided. If instant logout becomes a requirement: a revocation list of `sid`s in Redis with TTL = token lifetime |
+| P16 | Refresh tokens rotate on every use; presenting a spent one ends the session (reuse detection) | A stolen refresh token is caught the moment either the thief or the user uses it after the other (RFC 9700 section 4.14). Cost: two concurrent refreshes from one client log it out, so clients refresh one at a time | Decided |
+| P17 | Browsers get the refresh token as an `HttpOnly` cookie scoped to `/auth`; desktop apps get it in JSON and keep it in the OS keychain | Page scripts never see a browser's tokens (XSS); the refresh cookie is not sent on API calls. Desktop apps have no cookie jar to rely on | Decided |
+| P18 | Logout is public and accepts the refresh token or an access token (expired ones too); `POST /auth/logout-all` ends every session | A client whose access token just expired must still be able to log out; "sign out everywhere" covers a lost device | Decided |
+| P19 | Google sign-in requests online access only (no `access_type=offline`) | Google is used only to identify the user at sign-in. Offline access would give the server a long-lived Google refresh token it has no use for, a liability if stored. Clients that lose their network are covered by the directory's own refresh token (P13), not Google's | Decided. Revisit only for a feature that calls Google APIs on the user's behalf (e.g. Drive import) |
 
 ## Operations
 
@@ -83,7 +96,8 @@ yet confirmed), **Open** (needs a decision).
 
 | # | Decision | Why | Status |
 |---|---|---|---|
-| C1 | The editor is a **desktop app** built with Wails (Go + a web UI in the OS webview) | The CRDT engine is Go, so it runs natively in the app and in the collaboration server; native storage and notifications | Proposed |
+| C1 | The editor is a **desktop app** | Native storage and notifications; the Go engine runs natively | Decided |
+| C1a | Desktop framework: Wails (Go + a web UI in the OS webview) | The CRDT engine is Go; the editor can still use a web rich-text framework | Proposed |
 | C2 | Editor framework: Quill 2 | Its change format (insert / delete / retain with attributes) maps directly onto a flat CRDT sequence; rich text built in | Proposed |
 | C3 | A separate collaboration server (Go, WebSockets) relays updates, checks document roles and keeps the server copy | The directory stays a metadata service | Proposed |
 | C4 | Comments: threads stored in a database, anchored to CRDT character IDs | Anchors survive concurrent edits; threads need authorship and permissions | Proposed |

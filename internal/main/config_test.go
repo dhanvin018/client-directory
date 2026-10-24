@@ -15,7 +15,7 @@ func isolateEnv(t *testing.T) {
 	for _, k := range []string{
 		"CONFIG_FILE", "PORT", "DATABASE_URL", "JWT_SECRET", "GOOGLE_CLIENT_ID",
 		"GOOGLE_CLIENT_SECRET", "OAUTH_REDIRECT_URL", "POST_LOGIN_REDIRECT", "ALLOWED_ORIGINS",
-		"INVITE_LINK_BASE_URL",
+		"INVITE_LINK_BASE_URL", "INVITE_APP_LINK_BASE_URL",
 	} {
 		t.Setenv(k, "")
 	}
@@ -36,7 +36,7 @@ const sampleConfig = `{
   "database": {"url": "postgres://file", "maxOpenConns": 7, "maxIdleConns": 2, "connMaxLifetime": "90s"},
   "migrations": {"schemaDir": "db", "waitSeconds": 5, "skip": false},
   "auth":     {"jwtSecret": "file-secret", "jwtDuration": "2h", "cookieSecure": true, "postLoginRedirect": "http://app.test/"},
-  "invites":  {"linkBaseUrl": "http://app.test/invite/"},
+  "invites":  {"linkBaseUrl": "http://app.test/invite/", "appLinkBaseUrl": "app.test://invite/"},
   "oauth":    {"google": {"clientId": "file-id", "clientSecret": "file-oauth-secret", "redirectUrl": "http://api.test/cb"}}
 }`
 
@@ -66,6 +66,7 @@ func TestLoadConfigFromFile(t *testing.T) {
 		{"OAuthRedirectURL", cfg.OAuthRedirectURL, "http://api.test/cb"},
 		{"AllowedOrigins", strings.Join(cfg.AllowedOrigins, ","), "http://a.test,http://b.test"},
 		{"InviteLinkBase", cfg.InviteLinkBase, "http://app.test/invite/"},
+		{"InviteAppLinkBase", cfg.InviteAppLinkBase, "app.test://invite/"},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -109,7 +110,7 @@ func TestLoadConfigMissingFileUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != "8080" || cfg.JWTDuration != 24*time.Hour || cfg.GoogleClientID != "" {
+	if cfg.Port != "8080" || cfg.JWTDuration != 15*time.Minute || cfg.SessionDuration != 30*24*time.Hour || cfg.GoogleClientID != "" {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -120,6 +121,7 @@ func TestLoadConfigRejectsBadFiles(t *testing.T) {
 		// spelling (not "clientID") is an unknown field.
 		{"misspelled key", `{"oauth":{"google":{"client_id":"x"}}}`, `unknown field "client_id"`},
 		{"bad duration", `{"auth":{"jwtDuration":"forever"}}`, "auth.jwtDuration"},
+		{"access outlives session", `{"auth":{"jwtDuration":"48h","sessionDuration":"24h"}}`, "shorter than auth.sessionDuration"},
 		{"not JSON", `{`, "parsing"},
 	}
 	for _, tt := range tests {

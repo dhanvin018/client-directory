@@ -29,13 +29,15 @@ type rowScanner interface{ Scan(dest ...any) error }
 // repos implements service.Repos on one connection or transaction.
 type repos struct{ q dbtx }
 
-func (r repos) Peers() service.PeerRepository         { return peerRepo{r.q} }
-func (r repos) Rooms() service.RoomRepository         { return roomRepo{r.q} }
-func (r repos) Documents() service.DocumentRepository { return documentRepo{r.q} }
-func (r repos) Members() service.MemberRepository     { return memberRepo{r.q} }
-func (r repos) Events() service.EventRepository       { return eventRepo{r.q} }
-func (r repos) Invites() service.InviteRepository     { return inviteRepo{r.q} }
-func (r repos) Bans() service.BanRepository           { return banRepo{r.q} }
+func (r repos) Peers() service.PeerRepository                 { return peerRepo{r.q} }
+func (r repos) Rooms() service.RoomRepository                 { return roomRepo{r.q} }
+func (r repos) Documents() service.DocumentRepository         { return documentRepo{r.q} }
+func (r repos) Members() service.MemberRepository             { return memberRepo{r.q} }
+func (r repos) Events() service.EventRepository               { return eventRepo{r.q} }
+func (r repos) Invites() service.InviteRepository             { return inviteRepo{r.q} }
+func (r repos) Bans() service.BanRepository                   { return banRepo{r.q} }
+func (r repos) DesktopLogins() service.DesktopLoginRepository { return desktopLoginRepo{r.q} }
+func (r repos) Sessions() service.SessionRepository           { return sessionRepo{r.q} }
 
 // Store implements service.Store. Calls made directly on the Store run
 // outside a transaction; WithTx binds them all to one.
