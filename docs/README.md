@@ -3,8 +3,9 @@
 The client directory is the Go service that knows **who** people are and
 **where** documents live: peers (users), rooms, room membership and roles,
 document references, invitations, bans and an audit log per room. It never
-stores document content; that belongs to the collaboration server and the
-editor clients (see [roadmap.md](roadmap.md)).
+stores document content: editing is fully peer-to-peer between the desktop
+clients, and the directory is the project's only central component (see
+[roadmap.md](roadmap.md) and the project's `requirements.md`).
 
 | Document | What it covers |
 |---|---|

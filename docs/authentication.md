@@ -268,10 +268,11 @@ base64url(payload))`, keyed with `auth.jwtSecret`. Two consequences:
   can trust `peer_id` without looking anything up.
 
 HS256 is symmetric: the same secret signs and verifies. That fits because the
-directory is the only party that issues and checks these tokens. If another
-service (for example the collaboration server) needs to verify them without
-being able to mint them, switching to an asymmetric algorithm (RS256 or
-EdDSA, public key for verifiers) is the standard move.
+directory is the only party that issues and checks these tokens today. That
+changes with peer-to-peer editing: peers will verify each other's
+directory-issued tokens when they connect, and they must not be able to mint
+them, so the plan is to switch to an asymmetric algorithm (Ed25519 / EdDSA,
+public key for verifiers; decision C11, roadmap).
 
 ### 3.2 Issuing: `auth.AccessTokens.Issue`
 

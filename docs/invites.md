@@ -161,8 +161,9 @@ Two independent ways, and the invitee can use either:
 
 - **Inbox.** `GET /invites` returns the caller's live pending invites, newest
   first, each with its links. The inbox *is* the notification mechanism:
-  clients poll it (I12). Pushing invites over the collaboration server's
-  WebSocket is on the roadmap.
+  clients poll it (I12). Push notifications are on the roadmap; with editing
+  peer-to-peer there is no central WebSocket, so push would need its own
+  channel from the directory.
 - **Link.** The inviter copies `url` or `appUrl` and sends it however they
   like. Opening it leads the (signed-in) invitee to `GET /invites/{code}`.
 

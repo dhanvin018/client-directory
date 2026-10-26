@@ -13,8 +13,12 @@ The directory owns identity and collaboration metadata:
   content lives elsewhere.
 - **Invites, bans, and an append-only audit log per room.**
 
-Out of scope: document content, real-time sync, presence and comments. Those
-belong to the collaboration server.
+Out of scope: document content, real-time sync and presence. Those happen
+directly between peers (the desktop clients); there is no central
+collaboration server. The directory is the only central component: peers
+need it for sign-in, room discovery, invites, and every membership or role
+change, and it is the sole sequential writer of those, so access control
+never needs conflict resolution.
 
 ## 2. Layers
 

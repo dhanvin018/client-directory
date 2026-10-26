@@ -19,7 +19,7 @@ relies on was removed.
 | **Finishing OAuth sign-in** | The provider redirects the browser back to the directory, which sets the cookie and redirects to the web app | The sign-in happens in the **system browser**, which cannot hand a cookie to the app. The directory delivers a one-time code to a listener the app runs on `127.0.0.1`, and the app exchanges it for a token |
 | **Keeping secrets** | The web server is a confidential client: Google's client secret stays on the server | An installed app is a **public client**: anything shipped in it can be extracted, so it must hold no secret. PKCE proves the app that finishes sign-in is the one that started it |
 | **Links into the app** | Plain `https://` URLs open the page | A custom URL scheme (`collabdoc://…`) registered by the installer opens the app; a web link is still needed for people who do not have it |
-| **Notifications** | Only while a tab is open | Background process and OS notifications are possible (via the collaboration server's WebSocket, future) |
+| **Notifications** | Only while a tab is open | Background process and OS notifications are possible (from peers, or a future push channel from the directory) |
 | **Network identity** | Requests pass through the browser (proxies, extensions) | Direct; the app can pin TLS settings, retry and work offline |
 
 ## Desktop sign-in
